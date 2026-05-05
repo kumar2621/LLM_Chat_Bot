@@ -7,6 +7,68 @@ st.set_page_config(page_title="Simple Chatbot", layout="centered")
 st.title("Scooby Chatbot")
 
 # ---------------------------
+# 🔥 UI FIX (clean container + alignment)
+# ---------------------------
+st.markdown("""
+<style>
+
+/* Chat bubbles */
+.user-msg {
+    text-align: right;
+    background: #2b2b2b;
+    padding: 12px;
+    border-radius: 12px;
+    margin: 5px 0;
+}
+.bot-msg {
+    text-align: left;
+    background: #1e1e1e;
+    padding: 12px;
+    border-radius: 12px;
+    margin: 5px 0;
+}
+
+/* Input container */
+.input-box {
+    border: 1px solid #2f2f2f;
+    border-radius: 14px;
+    padding: 12px;
+    background-color: #111;
+    margin-top: 20px;
+}
+
+/* Align row */
+div[data-testid="stHorizontalBlock"] {
+    align-items: center;
+}
+
+/* Input height */
+input {
+    height: 44px !important;
+}
+
+/* Send button */
+button[kind="secondary"] {
+    height: 44px !important;
+}
+
+/* Upload fix */
+div[data-testid="stFileUploader"] {
+    margin-top: -2px;
+}
+
+/* Remove label + padding */
+div[data-testid="stFileUploader"] label {
+    display: none;
+}
+div[data-testid="stFileUploader"] > div {
+    padding: 0px !important;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------------
 # Session Storage
 # ---------------------------
 if "chats" not in st.session_state:
@@ -74,16 +136,51 @@ if st.session_state.current_chat:
     chat_history = st.session_state.chats[chat_id]
 
     # ---------------------------
-    # PDF Upload
+    # Messages
     # ---------------------------
+    for msg in chat_history:
+        if msg.role == "user":
+            st.markdown(f"<div class='user-msg'>{msg.content}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='bot-msg'>{msg.content}</div>", unsafe_allow_html=True)
+
+    # ---------------------------
+    # INPUT BOX WRAPPER
+    # ---------------------------
+    st.markdown('<div class="input-box">', unsafe_allow_html=True)
+
     upload_key = f"upload_{chat_id}_{st.session_state.upload_counter[chat_id]}"
 
-    uploaded_file = st.file_uploader(
-        "Upload PDF",
-        type="pdf",
-        key=upload_key
-    )
+    with st.form("chat_form", clear_on_submit=True):
 
+        col1, col2, col3 = st.columns([7, 1, 2])
+
+        # Input
+        with col1:
+            user_input = st.text_input(
+                "",
+                placeholder="Type your message...",
+                label_visibility="collapsed"
+            )
+
+        # Send
+        with col2:
+            submitted = st.form_submit_button("➤")
+
+        # Upload (now properly inside box)
+        with col3:
+            uploaded_file = st.file_uploader(
+                "",
+                type="pdf",
+                key=upload_key,
+                label_visibility="collapsed"
+            )
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ---------------------------
+    # Upload Logic
+    # ---------------------------
     def get_hash(file):
         return hashlib.md5(file.getvalue()).hexdigest()
 
@@ -103,12 +200,8 @@ if st.session_state.current_chat:
                     ]
                     response = chat_once(messages)
 
-            chat_history.append(
-                ChatMessage(role="user", content=f"📄 Uploaded: {uploaded_file.name}")
-            )
-            chat_history.append(
-                ChatMessage(role="assistant", content=response)
-            )
+            chat_history.append(ChatMessage(role="user", content=f"📄 {uploaded_file.name}"))
+            chat_history.append(ChatMessage(role="assistant", content=response))
 
             st.session_state.chat_files[chat_id] = file_hash
             st.session_state.upload_counter[chat_id] += 1
@@ -116,37 +209,17 @@ if st.session_state.current_chat:
             st.rerun()
 
     # ---------------------------
-    # Display messages
+    # Send Logic
     # ---------------------------
-    for msg in chat_history:
-        if msg.role == "user":
-            st.write(f"**You:** {msg.content}")
-        else:
-            st.write(f"**Bot:** {msg.content}")
-
-# ---------------------------
-# 🔥 INPUT FIX (Enter works)
-# ---------------------------
-with st.form("chat_form", clear_on_submit=True):
-    user_input = st.text_input("You:")
-    submitted = st.form_submit_button("Send")
-
     if submitted:
         if user_input.strip():
 
-            chat_messages = st.session_state.chats[st.session_state.current_chat]
+            chat_history.append(ChatMessage(role="user", content=user_input))
 
-            chat_messages.append(
-                ChatMessage(role="user", content=user_input)
-            )
+            bot_reply = chat_once(chat_history)
 
-            bot_reply = chat_once(chat_messages)
-
-            chat_messages.append(
-                ChatMessage(role="assistant", content=bot_reply)
-            )
+            chat_history.append(ChatMessage(role="assistant", content=bot_reply))
 
             st.rerun()
-
         else:
             st.warning("Enter something")
