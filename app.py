@@ -19,7 +19,7 @@ st.set_page_config(
     layout="centered"
 )
 
-st.title("Scooby Chatbot")
+st.title("Diabetes Assistant")
 
 # ==========================================
 # LOAD API KEY

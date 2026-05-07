@@ -1,110 +1,186 @@
 import json
 import re
-import hashlib
+from collections import Counter
 
 # ==========================================
 # CONFIG
 # ==========================================
 
-INPUT_FILE = "clean_diabetes_dataset.jsonl"
-
+INPUT_FILE = "clean_dataset.jsonl"
 OUTPUT_FILE = "final_filtered_dataset.jsonl"
 
-# ==========================================
-# REMOVE URL TYPES
-# ==========================================
-
-BAD_URL_KEYWORDS = [
-
-    # language
-    "/es",
-    "/fr",
-    "/de",
-    "/ru",
-    "/ar",
-
-    # marketing
-    "donate",
-    "fundraise",
-    "campaign",
-    "shop",
-    "store",
-    "merchandise",
-    "event",
-    "events",
-
-    # stories/emotional
-    "stories",
-    "champion",
-    "meet-",
-    "alex",
-
-    # legal/advocacy
-    "rights",
-    "advocacy",
-    "safe-at-school",
-    "air-travel",
-
-    # resource pages
-    "resources",
-    "resource",
-    "assistance",
-
-    # misc weak pages
-    "podcast",
-    "webinar",
-    "community",
-    "camp",
-]
+MIN_WORDS = 120
+MAX_WORDS = 1800
 
 # ==========================================
-# REMOVE PHRASES
+# GLOBAL STORAGE
 # ==========================================
 
-REMOVE_PATTERNS = [
-
-    "Give Today and Change lives",
-    "Donate Today",
-    "Shop ADA",
-    "Learn More",
-    "Read More",
-    "Explore Camps",
-    "Community Connections",
-    "American Diabetes Association",
-
-    # footer junk
-    "All rights reserved",
-
-    # repetitive CTA
-    "Join our fight",
-    "Take action today",
-]
+seen_content = set()
 
 # ==========================================
-# STORAGE
+# STRONG FILTER
 # ==========================================
 
-seen_docs = set()
+def is_noisy(text):
 
-seen_paragraphs = set()
+    lower = text.lower()
+
+    noise_score = 0
+
+    # ======================================
+    # BAD PAGES
+    # ======================================
+
+    BAD_PATTERNS = [
+
+        "table of contents",
+        "contents",
+        "preface",
+        "foreword",
+        "contributors",
+        "list of contributors",
+        "list of abbreviations",
+        "abbreviations",
+        "bibliography",
+        "references",
+        "further reading",
+        "all rights reserved",
+        "isbn",
+        "published by",
+        "companion website",
+        "acknowledgements",
+        "acknowledgments",
+        "editor",
+        "editors",
+        "author affiliations",
+        "copyright",
+        "index"
+    ]
+
+    for pattern in BAD_PATTERNS:
+
+        if pattern in lower:
+            noise_score += 3
+
+    # ======================================
+    # TOO MANY YEARS
+    # reference-heavy pages
+    # ======================================
+
+    years = re.findall(
+        r"\b(19|20)\d{2}\b",
+        text
+    )
+
+    if len(years) > 25:
+        noise_score += 2
+
+    # ======================================
+    # TOO MANY CAPITAL WORDS
+    # ======================================
+
+    caps = re.findall(
+        r"\b[A-Z]{2,}\b",
+        text
+    )
+
+    if len(caps) > 50:
+        noise_score += 2
+
+    # ======================================
+    # TOO MANY COMMAS
+    # contributor pages
+    # ======================================
+
+    if text.count(",") > 100:
+        noise_score += 2
+
+    # ======================================
+    # TOO MANY NAMES
+    # ======================================
+
+    names = re.findall(
+        r"\b[A-Z][a-z]+\s[A-Z][a-z]+\b",
+        text
+    )
+
+    if len(names) > 40:
+        noise_score += 2
+
+    # ======================================
+    # TOO MANY SHORT TOKENS
+    # abbreviation pages
+    # ======================================
+
+    short_tokens = re.findall(
+        r"\b[A-Z0-9\-]{2,6}\b",
+        text
+    )
+
+    if len(short_tokens) > 70:
+        noise_score += 2
+
+    # ======================================
+    # TOO REPETITIVE
+    # ======================================
+
+    words = text.lower().split()
+
+    if len(words) > 50:
+
+        common_words = Counter(words)
+
+        most_common = common_words.most_common(1)[0][1]
+
+        repetition_ratio = most_common / len(words)
+
+        if repetition_ratio > 0.08:
+            noise_score += 2
+
+    # ======================================
+    # FINAL DECISION
+    # ======================================
+
+    return noise_score >= 4
 
 # ==========================================
-# CLEANER
+# CLEAN TEXT
 # ==========================================
 
 def clean_text(text):
 
-    # remove bad phrases
-    for pattern in REMOVE_PATTERNS:
+    # remove urls
+    text = re.sub(
+        r"http\S+",
+        " ",
+        text
+    )
 
-        text = text.replace(pattern, "")
+    # remove emails
+    text = re.sub(
+        r"\S+@\S+",
+        " ",
+        text
+    )
 
-    # normalize spaces
-    text = re.sub(r"\s+", " ", text)
+    # remove multiple spaces
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
 
-    # remove weird chars
+    # remove weird unicode
     text = re.sub(
         r"[^\x00-\x7F]+",
+        " ",
+        text
+    )
+
+    # remove repeated punctuation
+    text = re.sub(
+        r"[=~_]{2,}",
         " ",
         text
     )
@@ -112,84 +188,69 @@ def clean_text(text):
     return text.strip()
 
 # ==========================================
-# HASH
+# REMOVE DUPLICATE SENTENCES
 # ==========================================
 
-def md5(text):
+def deduplicate_sentences(text):
 
-    return hashlib.md5(
-        text.encode("utf-8")
-    ).hexdigest()
+    sentences = re.split(
+        r'(?<=[.!?])\s+',
+        text
+    )
 
-# ==========================================
-# PARAGRAPH DEDUP
-# ==========================================
+    seen = set()
 
-def remove_duplicate_paragraphs(text):
+    cleaned = []
 
-    paragraphs = re.split(r'(?<=\.)\s+', text)
+    for sentence in sentences:
 
-    unique_paragraphs = []
+        sentence = sentence.strip()
 
-    for para in paragraphs:
-
-        para = para.strip()
-
-        if len(para.split()) < 8:
+        if len(sentence.split()) < 5:
             continue
 
-        h = md5(para)
+        normalized = sentence.lower()
 
-        if h in seen_paragraphs:
+        if normalized in seen:
             continue
 
-        seen_paragraphs.add(h)
+        seen.add(normalized)
 
-        unique_paragraphs.append(para)
+        cleaned.append(sentence)
 
-    return " ".join(unique_paragraphs)
+    return " ".join(cleaned)
 
 # ==========================================
 # MAIN
 # ==========================================
 
+total = 0
 saved = 0
-skipped = 0
+removed = 0
+duplicates = 0
 
-with open(INPUT_FILE, "r", encoding="utf-8") as infile, \
-     open(OUTPUT_FILE, "w", encoding="utf-8") as outfile:
+with open(
+    INPUT_FILE,
+    "r",
+    encoding="utf-8"
+) as infile, open(
+    OUTPUT_FILE,
+    "w",
+    encoding="utf-8"
+) as outfile:
 
     for line in infile:
+
+        total += 1
 
         try:
 
             data = json.loads(line)
 
-            url = data.get("url", "").lower()
-
-            title = data.get("title", "")
-
-            headings = data.get("headings", [])
-
-            content = data.get("content", "")
-
-            # ==================================
-            # REMOVE BAD URLS
-            # ==================================
-
-            if any(
-                bad in url
-                for bad in BAD_URL_KEYWORDS
-            ):
-
-                skipped += 1
-                continue
-
-            # skip homepage
-            if url.rstrip("/") == "https://diabetes.org":
-
-                skipped += 1
-                continue
+            content = data.get(
+                "content",
+                ""
+            )
 
             # ==================================
             # CLEAN
@@ -197,57 +258,74 @@ with open(INPUT_FILE, "r", encoding="utf-8") as infile, \
 
             content = clean_text(content)
 
-            # ==================================
-            # REMOVE DUP PARAGRAPHS
-            # ==================================
-
-            content = remove_duplicate_paragraphs(
+            content = deduplicate_sentences(
                 content
             )
 
             # ==================================
-            # SKIP SMALL CONTENT
+            # WORD COUNT FILTER
             # ==================================
 
-            if len(content.split()) < 120:
+            word_count = len(
+                content.split()
+            )
 
-                skipped += 1
+            if word_count < MIN_WORDS:
+                removed += 1
+                continue
+
+            if word_count > MAX_WORDS:
+                removed += 1
                 continue
 
             # ==================================
-            # FULL DOC DEDUP
+            # NOISE FILTER
             # ==================================
 
-            doc_hash = md5(content)
+            if is_noisy(content):
 
-            if doc_hash in seen_docs:
+                removed += 1
 
-                skipped += 1
+                print(
+                    f"[-] Removed Noisy "
+                    f"Entry {total}"
+                )
+
                 continue
 
-            seen_docs.add(doc_hash)
+            # ==================================
+            # GLOBAL DEDUP
+            # ==================================
+
+            content_hash = hash(
+                content[:1200]
+            )
+
+            if content_hash in seen_content:
+
+                duplicates += 1
+
+                continue
+
+            seen_content.add(
+                content_hash
+            )
+
+            # ==================================
+            # UPDATE CONTENT
+            # ==================================
+
+            data["content"] = content
+
+            data["word_count"] = word_count
 
             # ==================================
             # SAVE
             # ==================================
 
-            final_data = {
-
-                "url": url,
-
-                "title": title,
-
-                "headings": headings,
-
-                "content": content,
-
-                "word_count":
-                    len(content.split())
-            }
-
             outfile.write(
                 json.dumps(
-                    final_data,
+                    data,
                     ensure_ascii=False
                 )
                 + "\n"
@@ -255,20 +333,20 @@ with open(INPUT_FILE, "r", encoding="utf-8") as infile, \
 
             saved += 1
 
-            print(f"[+] Saved: {title}")
-
         except Exception as e:
 
             print("ERROR:", e)
 
 # ==========================================
-# DONE
+# FINAL STATS
 # ==========================================
 
-print("\n==============================")
-print("FINAL FILTERING COMPLETED")
-print("==============================")
-print(f"Saved Pages: {saved}")
-print(f"Skipped Pages: {skipped}")
+print("\n================================")
+print("FINAL FILTERING COMPLETE")
+print("================================")
+print(f"Total Entries: {total}")
+print(f"Saved Entries: {saved}")
+print(f"Removed Noise: {removed}")
+print(f"Removed Duplicates: {duplicates}")
 print(f"Output File: {OUTPUT_FILE}")
-print("==============================")
+print("================================")
