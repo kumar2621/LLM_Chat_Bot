@@ -1,14 +1,80 @@
 import streamlit as st
-from llm import chat_once, extract_pdf_text
-from mistralai.models.chat_completion import ChatMessage
-import hashlib
+import chromadb
 
-st.set_page_config(page_title="Simple Chatbot", layout="centered")
+from mistralai.client import MistralClient
+from mistralai.models.chat_completion import ChatMessage
+
+from sentence_transformers import (
+    SentenceTransformer
+)
+
+import os
+
+# ==========================================
+# PAGE CONFIG
+# ==========================================
+
+st.set_page_config(
+    page_title="Diabetes Assistant",
+    layout="centered"
+)
+
 st.title("Scooby Chatbot")
 
-# ---------------------------
-# 🔥 UI FIX (clean container + alignment)
-# ---------------------------
+# ==========================================
+# LOAD API KEY
+# ==========================================
+
+api_key = os.getenv("MISTRAL_API_KEY")
+
+if not api_key:
+    raise ValueError("MISTRAL_API_KEY not found")
+
+# ==========================================
+# LOAD MISTRAL
+# ==========================================
+
+mistral_client = MistralClient(
+    api_key=api_key
+)
+
+# ==========================================
+# LOAD EMBEDDING MODEL
+# ==========================================
+
+@st.cache_resource
+def load_embedding_model():
+
+    return SentenceTransformer(
+        "BAAI/bge-m3",
+        trust_remote_code=True
+    )
+
+embedding_model = load_embedding_model()
+
+# ==========================================
+# LOAD VECTOR DB
+# ==========================================
+
+@st.cache_resource
+def load_vector_db():
+
+    client = chromadb.PersistentClient(
+        path="diabetes_vector_db"
+    )
+
+    collection = client.get_collection(
+        name="diabetes_rag"
+    )
+
+    return collection
+
+collection = load_vector_db()
+
+# ==========================================
+# UI CSS
+# ==========================================
+
 st.markdown("""
 <style>
 
@@ -58,36 +124,8 @@ button[kind="secondary"] {
     border-radius: 10px !important;
 }
 
-/* Upload section fix */
-div[data-testid="stFileUploader"] {
-    margin-top: -2px;
-}
-
 /* Hide labels */
-div[data-testid="stFileUploader"] label {
-    display: none;
-}
-
 div[data-testid="stTextInput"] label {
-    display: none;
-}
-
-/* Remove extra spacing */
-div[data-testid="stFileUploader"] > div {
-    padding: 0px !important;
-}
-
-/* Better uploader alignment */
-section[data-testid="stFileUploaderDropzone"] {
-    padding: 0.2rem !important;
-    min-height: 44px !important;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-/* Reduce uploader text size */
-section[data-testid="stFileUploaderDropzone"] small {
     display: none;
 }
 
@@ -99,216 +137,284 @@ section[data-testid="stFileUploaderDropzone"] small {
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------
-# Session Storage
-# ---------------------------
+# ==========================================
+# SESSION STORAGE
+# ==========================================
+
 if "chats" not in st.session_state:
     st.session_state.chats = {}
 
 if "current_chat" not in st.session_state:
     st.session_state.current_chat = None
 
-if "chat_files" not in st.session_state:
-    st.session_state.chat_files = {}
+# ==========================================
+# CREATE DEFAULT CHAT
+# ==========================================
 
-if "upload_counter" not in st.session_state:
-    st.session_state.upload_counter = {}
-
-# ---------------------------
-# Ensure chat exists
-# ---------------------------
 if not st.session_state.current_chat:
-    chat_id = f"Chat {len(st.session_state.chats) + 1}"
+
+    chat_id = (
+        f"Chat "
+        f"{len(st.session_state.chats)+1}"
+    )
 
     st.session_state.chats[chat_id] = []
-    st.session_state.chat_files[chat_id] = None
-    st.session_state.upload_counter[chat_id] = 0
+
     st.session_state.current_chat = chat_id
 
-# ---------------------------
-# Sidebar
-# ---------------------------
+# ==========================================
+# SIDEBAR
+# ==========================================
+
 st.sidebar.title("Chats")
 
 if st.sidebar.button("➕ New Chat"):
-    chat_id = f"Chat {len(st.session_state.chats) + 1}"
+
+    chat_id = (
+        f"Chat "
+        f"{len(st.session_state.chats)+1}"
+    )
 
     st.session_state.chats[chat_id] = []
-    st.session_state.chat_files[chat_id] = None
-    st.session_state.upload_counter[chat_id] = 0
+
     st.session_state.current_chat = chat_id
 
-for chat_id in list(st.session_state.chats.keys()):
+for chat_id in list(
+    st.session_state.chats.keys()
+):
 
     col1, col2 = st.sidebar.columns([3, 1])
 
-    # Open chat
-    if col1.button(chat_id, key=f"open_{chat_id}"):
+    # open chat
+    if col1.button(
+        chat_id,
+        key=f"open_{chat_id}"
+    ):
+
         st.session_state.current_chat = chat_id
 
-    # Delete chat
-    if col2.button("❌", key=f"delete_{chat_id}"):
+    # delete chat
+    if col2.button(
+        "❌",
+        key=f"delete_{chat_id}"
+    ):
 
-        del st.session_state.chats[chat_id]
+        del st.session_state.chats[
+            chat_id
+        ]
 
-        if chat_id in st.session_state.chat_files:
-            del st.session_state.chat_files[chat_id]
+        if (
+            st.session_state.current_chat
+            == chat_id
+        ):
 
-        if chat_id in st.session_state.upload_counter:
-            del st.session_state.upload_counter[chat_id]
-
-        if st.session_state.current_chat == chat_id:
             st.session_state.current_chat = None
 
         st.rerun()
 
-# ---------------------------
-# Chat Area
-# ---------------------------
+# ==========================================
+# RAG RETRIEVAL
+# ==========================================
+
+def retrieve_context(query):
+
+    query_embedding = (
+        embedding_model.encode(query)
+        .tolist()
+    )
+
+    results = collection.query(
+
+        query_embeddings=[
+            query_embedding
+        ],
+
+        n_results=3
+    )
+
+    docs = results["documents"][0]
+
+    metas = results["metadatas"][0]
+
+    context = ""
+
+    for i, (doc, meta) in enumerate(
+        zip(docs, metas)
+    ):
+
+        context += f"""
+
+SOURCE {i+1}
+
+TITLE:
+{meta['title']}
+
+URL:
+{meta['url']}
+
+CONTENT:
+{doc}
+
+"""
+
+    return context
+
+# ==========================================
+# CHAT FUNCTION
+# ==========================================
+
+def rag_chat(user_query):
+
+    context = retrieve_context(
+        user_query
+    )
+
+    system_prompt = f"""
+You are a helpful medical AI assistant.
+
+Answer ONLY from the provided context.
+
+If answer is not found,
+say:
+"I could not find that information in the medical database."
+
+CONTEXT:
+{context}
+"""
+
+    response = mistral_client.chat(
+
+        model="mistral-small",
+
+        messages=[
+
+            ChatMessage(
+                role="system",
+                content=system_prompt
+            ),
+
+            ChatMessage(
+                role="user",
+                content=user_query
+            )
+        ],
+
+        temperature=0.3,
+        top_p=0.9
+    )
+
+    return (
+        response
+        .choices[0]
+        .message
+        .content
+    )
+
+# ==========================================
+# CHAT AREA
+# ==========================================
+
 if st.session_state.current_chat:
 
-    chat_id = st.session_state.current_chat
+    chat_id = (
+        st.session_state.current_chat
+    )
 
     st.subheader(f"Current: {chat_id}")
 
-    chat_history = st.session_state.chats[chat_id]
+    chat_history = (
+        st.session_state.chats[chat_id]
+    )
 
-    # ---------------------------
-    # Messages
-    # ---------------------------
+    # ======================================
+    # DISPLAY MESSAGES
+    # ======================================
+
     for msg in chat_history:
 
         if msg.role == "user":
+
             st.markdown(
-                f"<div class='user-msg'>{msg.content}</div>",
+                f"<div class='user-msg'>"
+                f"{msg.content}"
+                f"</div>",
                 unsafe_allow_html=True
             )
 
         else:
+
             st.markdown(
-                f"<div class='bot-msg'>{msg.content}</div>",
+                f"<div class='bot-msg'>"
+                f"{msg.content}"
+                f"</div>",
                 unsafe_allow_html=True
             )
 
-    # ---------------------------
-    # INPUT BOX WRAPPER
-    # ---------------------------
-    st.markdown('<div class="input-box">', unsafe_allow_html=True)
+    # ======================================
+    # INPUT BOX
+    # ======================================
 
-    upload_key = f"upload_{chat_id}_{st.session_state.upload_counter[chat_id]}"
+    st.markdown(
+        '<div class="input-box">',
+        unsafe_allow_html=True
+    )
 
-    with st.form("chat_form", clear_on_submit=True):
+    with st.form(
+        "chat_form",
+        clear_on_submit=True
+    ):
 
-        col1, col2, col3 = st.columns([7, 1, 2])
+        col1, col2 = st.columns([8, 1])
 
-        # ---------------------------
-        # Message Input
-        # ---------------------------
+        # input
         with col1:
 
             user_input = st.text_input(
                 "Message Input",
-                placeholder="Type your message...",
+                placeholder="Ask medical question...",
                 label_visibility="collapsed"
             )
 
-        # ---------------------------
-        # Send Button
-        # ---------------------------
+        # send button
         with col2:
 
-            submitted = st.form_submit_button("➤")
-
-        # ---------------------------
-        # File Upload
-        # ---------------------------
-        with col3:
-
-            uploaded_file = st.file_uploader(
-                "Upload PDF",
-                type="pdf",
-                key=upload_key,
-                label_visibility="collapsed"
+            submitted = (
+                st.form_submit_button("➤")
             )
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown(
+        '</div>',
+        unsafe_allow_html=True
+    )
 
-    # ---------------------------
-    # Upload Logic
-    # ---------------------------
-    def get_hash(file):
-        return hashlib.md5(file.getvalue()).hexdigest()
+    # ======================================
+    # SEND LOGIC
+    # ======================================
 
-    if uploaded_file:
-
-        file_hash = get_hash(uploaded_file)
-
-        # Prevent duplicate processing
-        if st.session_state.chat_files.get(chat_id) != file_hash:
-
-            with st.spinner("Reading PDF..."):
-
-                text = extract_pdf_text(uploaded_file)
-
-                if not text:
-
-                    response = "⚠️ No readable text found in this PDF."
-
-                else:
-
-                    messages = [
-                        ChatMessage(
-                            role="user",
-                            content=f"Explain this document:\n{text[:3000]}"
-                        )
-                    ]
-
-                    response = chat_once(messages)
-
-            # Add file message
-            chat_history.append(
-                ChatMessage(
-                    role="user",
-                    content=f"📄 {uploaded_file.name}"
-                )
-            )
-
-            # Add assistant response
-            chat_history.append(
-                ChatMessage(
-                    role="assistant",
-                    content=response
-                )
-            )
-
-            # Save file hash
-            st.session_state.chat_files[chat_id] = file_hash
-
-            # Update upload counter
-            st.session_state.upload_counter[chat_id] += 1
-
-            st.rerun()
-
-    # ---------------------------
-    # Send Message Logic
-    # ---------------------------
     if submitted:
 
         if user_input.strip():
 
-            # Add user message
+            # add user msg
             chat_history.append(
+
                 ChatMessage(
                     role="user",
                     content=user_input
                 )
             )
 
-            # Generate reply
-            bot_reply = chat_once(chat_history)
+            with st.spinner(
+                "Thinking..."
+            ):
 
-            # Add assistant message
+                bot_reply = rag_chat(
+                    user_input
+                )
+
+            # add assistant msg
             chat_history.append(
+
                 ChatMessage(
                     role="assistant",
                     content=bot_reply
@@ -318,4 +424,7 @@ if st.session_state.current_chat:
             st.rerun()
 
         else:
-            st.warning("Enter something")
+
+            st.warning(
+                "Enter something"
+            )
