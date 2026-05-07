@@ -1,3 +1,6 @@
 streamlit
 mistralai
 pdfplumber
+sentence-transformers
+chromadb
+torch
