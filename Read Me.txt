@@ -1,0 +1,63 @@
+# Diabetes RAG Assistant
+
+A domain-specific Retrieval-Augmented Generation (RAG) based AI assistant designed to answer diabetes-related medical questions using a custom vector database and semantic retrieval.
+
+---
+
+# Overview
+
+This project is an AI-powered medical assistant focused exclusively on diabetes-related queries. The system uses semantic search with vector embeddings to retrieve relevant medical context from a curated diabetes knowledge base before generating responses using a Large Language Model (LLM).
+
+The assistant is intentionally restricted to the diabetes domain to improve:
+- reliability
+- safety
+- response accuracy
+- hallucination prevention
+
+---
+
+# Features
+
+- Diabetes-focused AI assistant
+- Retrieval-Augmented Generation (RAG)
+- Semantic search using vector embeddings
+- ChromaDB vector database
+- BGE-M3 embedding model
+- Mistral LLM integration
+- Domain-restricted query handling
+- Prompt injection resistance
+- Relevance threshold filtering
+- Streamlit-based interactive interface
+- Real-time context retrieval
+
+---
+
+# Tech Stack
+
+| Component | Technology |
+|---|---|
+| LLM | Mistral AI |
+| Embedding Model | BAAI/bge-m3 |
+| Vector Database | ChromaDB |
+| Backend | Python |
+| UI | Streamlit |
+| Semantic Search | Sentence Transformers |
+
+---
+
+# Project Architecture
+
+```text
+User Query
+    ↓
+Domain Validation
+    ↓
+Embedding Generation
+    ↓
+ChromaDB Similarity Search
+    ↓
+Relevant Context Retrieval
+    ↓
+Mistral LLM
+    ↓
+Final Response

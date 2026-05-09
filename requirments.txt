@@ -4,3 +4,5 @@ pdfplumber
 sentence-transformers
 chromadb
 torch
+duckduckgo-search
+trafilatura

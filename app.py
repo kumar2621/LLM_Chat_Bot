@@ -1,14 +1,19 @@
 import streamlit as st
 import chromadb
+import trafilatura
+import os
+
+from duckduckgo_search import DDGS
 
 from mistralai.client import MistralClient
-from mistralai.models.chat_completion import ChatMessage
+
+from mistralai.models.chat_completion import (
+    ChatMessage
+)
 
 from sentence_transformers import (
     SentenceTransformer
 )
-
-import os
 
 # ==========================================
 # PAGE CONFIG
@@ -28,7 +33,10 @@ st.title("Diabetes Assistant")
 api_key = os.getenv("MISTRAL_API_KEY")
 
 if not api_key:
-    raise ValueError("MISTRAL_API_KEY not found")
+
+    raise ValueError(
+        "MISTRAL_API_KEY not found"
+    )
 
 # ==========================================
 # LOAD MISTRAL
@@ -79,7 +87,9 @@ st.markdown("""
 <style>
 
 /* Chat bubbles */
+
 .user-msg {
+
     text-align: right;
     background: #2b2b2b;
     padding: 12px;
@@ -89,6 +99,7 @@ st.markdown("""
 }
 
 .bot-msg {
+
     text-align: left;
     background: #1e1e1e;
     padding: 12px;
@@ -98,7 +109,9 @@ st.markdown("""
 }
 
 /* Input container */
+
 .input-box {
+
     border: 1px solid #2f2f2f;
     border-radius: 16px;
     padding: 12px;
@@ -107,30 +120,40 @@ st.markdown("""
 }
 
 /* Align everything */
+
 div[data-testid="stHorizontalBlock"] {
+
     align-items: center;
 }
 
 /* Text input */
+
 input {
+
     height: 44px !important;
     border-radius: 10px !important;
 }
 
 /* Send button */
+
 button[kind="secondary"] {
+
     height: 44px !important;
     min-width: 50px !important;
     border-radius: 10px !important;
 }
 
 /* Hide labels */
+
 div[data-testid="stTextInput"] label {
+
     display: none;
 }
 
 /* Sidebar buttons */
+
 .stSidebar button {
+
     width: 100%;
 }
 
@@ -142,9 +165,11 @@ div[data-testid="stTextInput"] label {
 # ==========================================
 
 if "chats" not in st.session_state:
+
     st.session_state.chats = {}
 
 if "current_chat" not in st.session_state:
+
     st.session_state.current_chat = None
 
 # ==========================================
@@ -185,7 +210,10 @@ for chat_id in list(
 
     col1, col2 = st.sidebar.columns([3, 1])
 
-    # open chat
+    # ======================================
+    # OPEN CHAT
+    # ======================================
+
     if col1.button(
         chat_id,
         key=f"open_{chat_id}"
@@ -193,7 +221,10 @@ for chat_id in list(
 
         st.session_state.current_chat = chat_id
 
-    # delete chat
+    # ======================================
+    # DELETE CHAT
+    # ======================================
+
     if col2.button(
         "❌",
         key=f"delete_{chat_id}"
@@ -213,6 +244,101 @@ for chat_id in list(
         st.rerun()
 
 # ==========================================
+# WEB SEARCH TOOL
+# ==========================================
+
+def web_search(query, max_results=3):
+
+    results_data = []
+
+    try:
+
+        with DDGS() as ddgs:
+
+            results = ddgs.text(
+                query,
+                max_results=max_results
+            )
+
+            for r in results:
+
+                results_data.append({
+
+                    "title": r["title"],
+                    "url": r["href"]
+
+                })
+
+    except Exception as e:
+
+        st.error(
+            f"Web Search Error: {e}"
+        )
+
+    return results_data
+
+# ==========================================
+# SCRAPE WEB CONTENT
+# ==========================================
+
+def scrape_web_content(url):
+
+    try:
+
+        downloaded = trafilatura.fetch_url(
+            url
+        )
+
+        if not downloaded:
+            return ""
+
+        text = trafilatura.extract(
+            downloaded
+        )
+
+        return text if text else ""
+
+    except Exception:
+
+        return ""
+
+# ==========================================
+# GET WEB CONTEXT
+# ==========================================
+
+def retrieve_web_context(query):
+
+    search_results = web_search(query)
+
+    context = ""
+
+    for i, result in enumerate(search_results):
+
+        content = scrape_web_content(
+            result["url"]
+        )
+
+        if not content:
+            continue
+
+        context += f"""
+
+WEB SOURCE {i+1}
+
+TITLE:
+{result['title']}
+
+URL:
+{result['url']}
+
+CONTENT:
+{content[:3000]}
+
+"""
+
+    return context
+
+# ==========================================
 # RAG RETRIEVAL
 # ==========================================
 
@@ -229,12 +355,53 @@ def retrieve_context(query):
             query_embedding
         ],
 
-        n_results=3
+        n_results=3,
+
+        include=[
+            "documents",
+            "metadatas",
+            "distances"
+        ]
     )
 
     docs = results["documents"][0]
 
     metas = results["metadatas"][0]
+
+    distances = results["distances"][0]
+
+    # ======================================
+    # BEST DISTANCE
+    # ======================================
+
+    best_distance = distances[0]
+
+    print(
+        f"[+] Best Distance: "
+        f"{best_distance}"
+    )
+
+    # ======================================
+    # WEB SEARCH FALLBACK
+    # ======================================
+
+    if best_distance > 1.2:
+
+        print(
+            "[+] No strong DB result"
+        )
+
+        print(
+            "[+] Switching to Web Search"
+        )
+
+        return retrieve_web_context(
+            query
+        )
+
+    # ======================================
+    # USE VECTOR DB
+    # ======================================
 
     context = ""
 
@@ -274,9 +441,10 @@ You are a helpful medical AI assistant.
 
 Answer ONLY from the provided context.
 
-If answer is not found,
+If reliable information is not found,
 say:
-"I could not find that information in the medical database."
+
+"I could not find reliable information."
 
 CONTEXT:
 {context}
@@ -320,7 +488,9 @@ if st.session_state.current_chat:
         st.session_state.current_chat
     )
 
-    st.subheader(f"Current: {chat_id}")
+    st.subheader(
+        f"Current: {chat_id}"
+    )
 
     chat_history = (
         st.session_state.chats[chat_id]
@@ -335,18 +505,22 @@ if st.session_state.current_chat:
         if msg.role == "user":
 
             st.markdown(
+
                 f"<div class='user-msg'>"
                 f"{msg.content}"
                 f"</div>",
+
                 unsafe_allow_html=True
             )
 
         else:
 
             st.markdown(
+
                 f"<div class='bot-msg'>"
                 f"{msg.content}"
                 f"</div>",
+
                 unsafe_allow_html=True
             )
 
@@ -366,16 +540,26 @@ if st.session_state.current_chat:
 
         col1, col2 = st.columns([8, 1])
 
-        # input
+        # ==================================
+        # INPUT
+        # ==================================
+
         with col1:
 
             user_input = st.text_input(
+
                 "Message Input",
-                placeholder="Ask medical question...",
+
+                placeholder=
+                "Ask medical question...",
+
                 label_visibility="collapsed"
             )
 
-        # send button
+        # ==================================
+        # SEND BUTTON
+        # ==================================
+
         with col2:
 
             submitted = (
@@ -395,7 +579,10 @@ if st.session_state.current_chat:
 
         if user_input.strip():
 
-            # add user msg
+            # ==============================
+            # USER MESSAGE
+            # ==============================
+
             chat_history.append(
 
                 ChatMessage(
@@ -403,6 +590,10 @@ if st.session_state.current_chat:
                     content=user_input
                 )
             )
+
+            # ==============================
+            # BOT RESPONSE
+            # ==============================
 
             with st.spinner(
                 "Thinking..."
@@ -412,7 +603,10 @@ if st.session_state.current_chat:
                     user_input
                 )
 
-            # add assistant msg
+            # ==============================
+            # SAVE BOT MESSAGE
+            # ==============================
+
             chat_history.append(
 
                 ChatMessage(
